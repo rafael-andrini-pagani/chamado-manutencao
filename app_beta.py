@@ -9,6 +9,12 @@ from typing import Optional, List, Dict
 import streamlit as st
 import pandas as pd  # (mantido se você quiser relatórios depois)
 
+st.set_page_config(
+    page_title="Sistema de Manutenção",
+    page_icon="assets/icone_manutencao.png",
+    layout="centered",
+)
+
 # =========================================================
 # CONFIG
 # =========================================================
