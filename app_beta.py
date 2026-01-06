@@ -9,11 +9,11 @@ from PIL import Image
 import streamlit as st
 import pandas as pd  # (mantido se você quiser relatórios depois)
 
-st.set_page_config(
-    page_title="Sistema de Manutenção",
-    page_icon="assets/icone_manutencao.png",
-    layout="centered",
-)
+# st.set_page_config(
+#     page_title="Sistema de Manutenção",
+#     page_icon="assets/icone_manutencao.png",
+#     layout="centered",
+# )
 
 # =========================================================
 # CONFIG
@@ -1820,7 +1820,7 @@ APP_TITLE = "Sistema de Manutenção"
 
 def main():
     # --- ÍCONE DO APP (arquivo) ---
-    icon = Image.open("assets/icone_manutencao.png")
+    icon = Image.open("assets/icon_v2.png")
 
     # --- CONFIGURAÇÃO DA PÁGINA (TEM QUE SER PRIMEIRO) ---
     st.set_page_config(
