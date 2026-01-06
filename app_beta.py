@@ -1,8 +1,12 @@
-# app.py
+# app_beta.py
 import os
 import json
 import uuid
 import sqlite3
+import base64
+import hashlib
+import hmac
+import secrets
 from datetime import datetime
 from typing import Optional, List, Dict
 
@@ -67,6 +71,52 @@ DEFAULT_EQUIPMENTS = [
     ("Estoque", "Empilhadeira Manual", "Empilhadeira para movimentação", "🔧"),
     ("Bar/Cafeteria", "Máquina de Café Expresso", "Máquina de café do bar", "🔧"),
 ]
+
+# =========================================================
+# PASSWORDS (hash seguro + compatível com legado)
+# =========================================================
+PBKDF2_PREFIX = "pbkdf2_sha256"
+
+
+def hash_password(plain: str, iterations: int = 260_000) -> str:
+    """
+    Retorna string no formato:
+    pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64>
+    """
+    if plain is None:
+        plain = ""
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt, iterations)
+    return (
+        f"{PBKDF2_PREFIX}${iterations}$"
+        f"{base64.b64encode(salt).decode()}$"
+        f"{base64.b64encode(dk).decode()}"
+    )
+
+
+def verify_password(plain: str, stored: str) -> bool:
+    """
+    Suporta:
+    - legado (texto puro): stored == plain
+    - novo (pbkdf2_sha256$...): valida PBKDF2
+    """
+    if stored is None:
+        return False
+
+    # legado (senha em texto puro)
+    if not stored.startswith(PBKDF2_PREFIX + "$"):
+        return hmac.compare_digest(str(plain), str(stored))
+
+    try:
+        _prefix, iters, salt_b64, hash_b64 = stored.split("$", 3)
+        iterations = int(iters)
+        salt = base64.b64decode(salt_b64.encode())
+        expected = base64.b64decode(hash_b64.encode())
+        dk = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt, iterations)
+        return hmac.compare_digest(dk, expected)
+    except Exception:
+        return False
+
 
 # =========================================================
 # DB LAYER (single file)
@@ -145,18 +195,21 @@ def init_db():
     if cur.fetchone()["n"] == 0:
         cur.execute(
             "INSERT INTO users (name, username, password, role) VALUES (?, ?, ?, ?)",
-            ("Administrador", "admin", "admin123", "admin"),
+            ("Administrador", "admin", hash_password("admin123"), "admin"),
         )
         cur.execute(
             "INSERT INTO users (name, username, password, role) VALUES (?, ?, ?, ?)",
-            ("Rafael Augusto", "operador", "123", "operador"),
+            ("Rafael Augusto", "operador", hash_password("123"), "operador"),
         )
 
     # seed sectors
     cur.execute("SELECT COUNT(*) AS n FROM sectors;")
     if cur.fetchone()["n"] == 0:
         for name, icon, color in DEFAULT_SECTORS:
-            cur.execute("INSERT INTO sectors (name, icon, color) VALUES (?, ?, ?)", (name, icon, color))
+            cur.execute(
+                "INSERT INTO sectors (name, icon, color) VALUES (?, ?, ?)",
+                (name, icon, color),
+            )
 
     # seed equipments
     cur.execute("SELECT COUNT(*) AS n FROM equipments;")
@@ -487,13 +540,10 @@ def inject_css():
 
         /* Small helper: spacing for top-back row */
         .topRowTitle{ margin-top: 2px; }
-
         </style>
         """,
         unsafe_allow_html=True,
     )
-
-
 
 
 def app_shell_start():
@@ -541,10 +591,22 @@ def save_upload_file(file) -> Optional[str]:
 # AUTH
 # =========================================================
 def auth_user(username: str, password: str) -> Optional[dict]:
-    r = one("SELECT * FROM users WHERE username = ? AND password = ? LIMIT 1", (username, password))
+    r = one("SELECT * FROM users WHERE username = ? LIMIT 1", (username,))
     if not r:
         return None
-    return dict(r)
+
+    user = dict(r)
+    if not verify_password(password, user.get("password", "")):
+        return None
+
+    # Auto-upgrade: se a senha estiver em texto puro, converte para hash após login OK
+    stored = user.get("password", "")
+    if stored and not stored.startswith(PBKDF2_PREFIX + "$"):
+        new_hash = hash_password(password)
+        exec_sql("UPDATE users SET password = ? WHERE id = ?", (new_hash, user["id"]))
+        user["password"] = new_hash
+
+    return user
 
 
 def current_user() -> Optional[dict]:
@@ -683,6 +745,43 @@ def stats_admin() -> Dict[str, int]:
 
 
 # =========================================================
+# USERS (ADMIN)
+# =========================================================
+def list_users() -> List[dict]:
+    rs = all_rows("SELECT id, name, username, role, photo_path FROM users ORDER BY role DESC, name ASC")
+    return [dict(r) for r in rs]
+
+
+def get_user_by_id(user_id: int) -> Optional[dict]:
+    r = one("SELECT * FROM users WHERE id = ?", (user_id,))
+    return dict(r) if r else None
+
+
+def update_user_credentials(user_id: int, new_name: str, new_username: str, new_password: Optional[str]):
+    """
+    new_password: se None ou "", não altera senha.
+    """
+    if not new_username.strip():
+        raise ValueError("Usuário (login) não pode ficar vazio.")
+
+    exists = one("SELECT id FROM users WHERE username = ? AND id != ? LIMIT 1", (new_username.strip(), user_id))
+    if exists:
+        raise ValueError("Já existe um usuário com esse login.")
+
+    if new_password is not None and new_password.strip() != "":
+        pw = hash_password(new_password.strip())
+        exec_sql(
+            "UPDATE users SET name = ?, username = ?, password = ? WHERE id = ?",
+            (new_name.strip(), new_username.strip(), pw, user_id),
+        )
+    else:
+        exec_sql(
+            "UPDATE users SET name = ?, username = ? WHERE id = ?",
+            (new_name.strip(), new_username.strip(), user_id),
+        )
+
+
+# =========================================================
 # COMPONENTS
 # =========================================================
 def top_back(title: str, subtitle: Optional[str] = None, back_to: Optional[str] = None):
@@ -807,14 +906,12 @@ def sector_grid(sectors: List[dict]):
         icon = s.get("icon") or "🧩"
         color = s.get("color") or "rgba(148,163,184,.14)"
 
-        # conteúdo do "card-button"
         label = f"{icon}  {s['name']}"
         with cols[idx % 2]:
             st.markdown('<div class="cardBtnWrap">', unsafe_allow_html=True)
             clicked = st.button(label, key=f"sector_card_{s['id']}", use_container_width=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
-            # pequeno badge atrás do emoji (sem apagar o emoji)
             st.markdown(
                 f"""
                 <div style="margin-top:-54px; padding-left:14px; height:0;">
@@ -842,8 +939,6 @@ def equipment_list(eqs: List[dict]):
         icon = e.get("icon") or "🔧"
         title = e["name"]
         desc = e.get("description") or ""
-
-        # label multi-linha fica ok no mobile
         label = f"{icon}  {title}\n{desc}" if desc else f"{icon}  {title}"
 
         st.markdown('<div class="cardBtnWrap">', unsafe_allow_html=True)
@@ -943,20 +1038,17 @@ def dialog_new_sector(edit_id: Optional[int] = None):
     cols = st.columns(len(COLOR_OPTIONS))
     picked = data["color"] if data else "rgba(59,130,246,.18)"
 
-    # se o setor antigo estiver em hex, mantém; se for rgba também ok
     if data and data.get("color"):
         picked = data["color"]
 
     for i, col in enumerate(cols):
         with col:
-            # botão pequeno; a cor é aplicada no preview
             if st.button("●", key=f"clr_{i}", help=COLOR_OPTIONS[i]):
-                # converter hex para rgba leve pra dark
                 hexv = COLOR_OPTIONS[i].lstrip("#")
-                r = int(hexv[0:2], 16)
-                g = int(hexv[2:4], 16)
-                b = int(hexv[4:6], 16)
-                picked = f"rgba({r},{g},{b},.18)"
+                rr = int(hexv[0:2], 16)
+                gg = int(hexv[2:4], 16)
+                bb = int(hexv[4:6], 16)
+                picked = f"rgba({rr},{gg},{bb},.18)"
                 st.session_state._sector_color_pick = picked
 
     picked = st.session_state.get("_sector_color_pick", picked)
@@ -982,9 +1074,15 @@ def dialog_new_sector(edit_id: Optional[int] = None):
             st.stop()
         try:
             if edit_id:
-                exec_sql("UPDATE sectors SET name = ?, icon = ?, color = ? WHERE id = ?", (name.strip(), icon, picked, edit_id))
+                exec_sql(
+                    "UPDATE sectors SET name = ?, icon = ?, color = ? WHERE id = ?",
+                    (name.strip(), icon, picked, edit_id),
+                )
             else:
-                exec_sql("INSERT INTO sectors (name, icon, color) VALUES (?, ?, ?)", (name.strip(), icon, picked))
+                exec_sql(
+                    "INSERT INTO sectors (name, icon, color) VALUES (?, ?, ?)",
+                    (name.strip(), icon, picked),
+                )
             st.session_state._sector_color_pick = "rgba(59,130,246,.18)"
             st.rerun()
         except sqlite3.IntegrityError:
@@ -1096,7 +1194,9 @@ def screen_home():
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
     c1, c2, c3 = st.columns(3)
-    for i, (c, txt) in enumerate([(c1, "Escolha o setor"), (c2, "Selecione o equipamento"), (c3, "Descreva o problema")], start=1):
+    for i, (c, txt) in enumerate(
+        [(c1, "Escolha o setor"), (c2, "Selecione o equipamento"), (c3, "Descreva o problema")], start=1
+    ):
         with c:
             st.markdown(
                 f"""
@@ -1205,9 +1305,9 @@ def screen_abrir_chamado():
         saved_paths = []
         if ups:
             for f in ups[:5]:
-                p = save_upload_file(f)
-                if p:
-                    saved_paths.append(p)
+                pth = save_upload_file(f)
+                if pth:
+                    saved_paths.append(pth)
 
         st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
         st.markdown("<div style='font-weight:900;'>Qual a urgência?</div>", unsafe_allow_html=True)
@@ -1318,10 +1418,13 @@ def screen_admin_painel():
         set_route("admin_cadastros")
         st.rerun()
 
+    if st.button("👤  Usuários / Senhas", key="btn_users", use_container_width=False):
+        set_route("admin_users")
+        st.rerun()
+
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
-    # Tabs (visual)
     tab1, tab2 = st.columns(2)
     with tab1:
         st.markdown("<div class='miniPill'>🔧  Chamados</div>", unsafe_allow_html=True)
@@ -1362,7 +1465,12 @@ def screen_admin_painel():
         tickets = [
             t
             for t in tickets
-            if (qq in t["equipment_name"].lower() or qq in t["sector_name"].lower() or qq in t["created_by_name"].lower() or qq in t["description"].lower())
+            if (
+                qq in t["equipment_name"].lower()
+                or qq in t["sector_name"].lower()
+                or qq in t["created_by_name"].lower()
+                or qq in t["description"].lower()
+            )
         ]
 
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
@@ -1508,6 +1616,86 @@ def screen_admin_cadastros():
     app_shell_end()
 
 
+def screen_admin_users():
+    inject_css()
+    require_login()
+    user = current_user()
+    if user["role"] != "admin":
+        st.error("Acesso restrito ao Admin.")
+        return
+
+    app_shell_start()
+    top_back("Usuários e Senhas", "Altere login e senha do operador e do admin", back_to="admin_painel")
+
+    users = list_users()
+    if not users:
+        st.info("Nenhum usuário encontrado.")
+        app_shell_end()
+        return
+
+    labels = [f'{u["name"]} ({u["role"]}) — login: {u["username"]}' for u in users]
+    idx = st.selectbox("Selecione o usuário", list(range(len(users))), format_func=lambda i: labels[i])
+
+    selected = users[idx]
+    full = get_user_by_id(selected["id"])
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("<div class='title'>Editar</div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+    new_name = st.text_input("Nome", value=full.get("name", ""))
+    new_username = st.text_input("Login (username)", value=full.get("username", ""))
+
+    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+    st.markdown("<div class='muted'>Senha</div>", unsafe_allow_html=True)
+    new_password = st.text_input("Nova senha (deixe em branco para não mudar)", value="", type="password")
+    new_password2 = st.text_input("Confirmar nova senha", value="", type="password")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Salvar alterações", type="primary", use_container_width=True):
+            try:
+                if new_password.strip() or new_password2.strip():
+                    if new_password.strip() != new_password2.strip():
+                        st.error("As senhas não conferem.")
+                        st.stop()
+                    if len(new_password.strip()) < 4:
+                        st.error("A senha deve ter pelo menos 4 caracteres.")
+                        st.stop()
+
+                update_user_credentials(
+                    user_id=full["id"],
+                    new_name=new_name,
+                    new_username=new_username,
+                    new_password=new_password if new_password.strip() else None,
+                )
+
+                # Se o admin alterou a si próprio, atualiza a sessão
+                if int(full["id"]) == int(user["id"]):
+                    refreshed = get_user_by_id(full["id"])
+                    if refreshed:
+                        st.session_state.user = refreshed
+
+                st.success("Usuário atualizado com sucesso.")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+            except sqlite3.IntegrityError:
+                st.error("Não foi possível salvar. Verifique se o login já existe.")
+            except Exception:
+                st.error("Erro inesperado ao salvar.")
+
+    with col2:
+        if st.button("Voltar", use_container_width=True):
+            set_route("admin_painel")
+            st.rerun()
+
+    app_shell_end()
+
+
 # =========================================================
 # ROUTER
 # =========================================================
@@ -1527,6 +1715,8 @@ def router():
         screen_admin_painel()
     elif route == "admin_cadastros":
         screen_admin_cadastros()
+    elif route == "admin_users":
+        screen_admin_users()
     else:
         st.session_state.route = "home"
         st.rerun()
@@ -1551,4 +1741,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
