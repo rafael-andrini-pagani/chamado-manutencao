@@ -1,4 +1,4 @@
-# app_beta.py (single-file)
+_# app_beta.py (single-file)
 import os
 import json
 import uuid
@@ -1820,7 +1820,7 @@ APP_TITLE = "Sistema de Manutenção"
 
 def main():
     # --- ÍCONE DO APP (arquivo) ---
-    icon = Image.open("assets/icon.png")
+    icon = Image.open("assets/icone_manutencao.png")
 
     # --- CONFIGURAÇÃO DA PÁGINA (TEM QUE SER PRIMEIRO) ---
     st.set_page_config(
