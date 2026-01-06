@@ -1,4 +1,4 @@
-_# app_beta.py (single-file)
+# app_beta.py (single-file)
 import os
 import json
 import uuid
