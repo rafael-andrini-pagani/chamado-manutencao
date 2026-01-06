@@ -5,7 +5,7 @@ import uuid
 import sqlite3
 from datetime import datetime
 from typing import Optional, List, Dict
-
+from PIL import Image
 import streamlit as st
 import pandas as pd  # (mantido se você quiser relatórios depois)
 
@@ -1803,17 +1803,46 @@ def router():
 # =========================================================
 # MAIN
 # =========================================================
+# def main():
+#     st.set_page_config(page_title=APP_TITLE, page_icon="🔧", layout="centered")
+#     init_db()
+
+#     if "route" not in st.session_state:
+#         st.session_state.route = "login"
+#     if "wizard_step" not in st.session_state:
+#         st.session_state.wizard_step = 1
+#     if "priority" not in st.session_state:
+#         st.session_state.priority = "Média"
+
+#     router()
+
+APP_TITLE = "Sistema de Manutenção"
+
 def main():
-    st.set_page_config(page_title=APP_TITLE, page_icon="🔧", layout="centered")
+    # --- ÍCONE DO APP (arquivo) ---
+    icon = Image.open("assets/icon.png")
+
+    # --- CONFIGURAÇÃO DA PÁGINA (TEM QUE SER PRIMEIRO) ---
+    st.set_page_config(
+        page_title=APP_TITLE,
+        page_icon=icon,
+        layout="centered",
+    )
+
+    # --- INICIALIZA BANCO ---
     init_db()
 
+    # --- SESSION STATE PADRÃO ---
     if "route" not in st.session_state:
         st.session_state.route = "login"
+
     if "wizard_step" not in st.session_state:
         st.session_state.wizard_step = 1
+
     if "priority" not in st.session_state:
         st.session_state.priority = "Média"
 
+    # --- ROTEADOR ---
     router()
 
 
