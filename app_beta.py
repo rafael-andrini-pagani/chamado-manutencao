@@ -1,12 +1,8 @@
-# app_beta.py
+# app_beta.py (single-file)
 import os
 import json
 import uuid
 import sqlite3
-import base64
-import hashlib
-import hmac
-import secrets
 from datetime import datetime
 from typing import Optional, List, Dict
 
@@ -71,52 +67,6 @@ DEFAULT_EQUIPMENTS = [
     ("Estoque", "Empilhadeira Manual", "Empilhadeira para movimentação", "🔧"),
     ("Bar/Cafeteria", "Máquina de Café Expresso", "Máquina de café do bar", "🔧"),
 ]
-
-# =========================================================
-# PASSWORDS (hash seguro + compatível com legado)
-# =========================================================
-PBKDF2_PREFIX = "pbkdf2_sha256"
-
-
-def hash_password(plain: str, iterations: int = 260_000) -> str:
-    """
-    Retorna string no formato:
-    pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64>
-    """
-    if plain is None:
-        plain = ""
-    salt = secrets.token_bytes(16)
-    dk = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt, iterations)
-    return (
-        f"{PBKDF2_PREFIX}${iterations}$"
-        f"{base64.b64encode(salt).decode()}$"
-        f"{base64.b64encode(dk).decode()}"
-    )
-
-
-def verify_password(plain: str, stored: str) -> bool:
-    """
-    Suporta:
-    - legado (texto puro): stored == plain
-    - novo (pbkdf2_sha256$...): valida PBKDF2
-    """
-    if stored is None:
-        return False
-
-    # legado (senha em texto puro)
-    if not stored.startswith(PBKDF2_PREFIX + "$"):
-        return hmac.compare_digest(str(plain), str(stored))
-
-    try:
-        _prefix, iters, salt_b64, hash_b64 = stored.split("$", 3)
-        iterations = int(iters)
-        salt = base64.b64decode(salt_b64.encode())
-        expected = base64.b64decode(hash_b64.encode())
-        dk = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt, iterations)
-        return hmac.compare_digest(dk, expected)
-    except Exception:
-        return False
-
 
 # =========================================================
 # DB LAYER (single file)
@@ -190,26 +140,36 @@ def init_db():
         """
     )
 
+    # ==============================
+    # MIGRATIONS (tickets: archived)
+    # ==============================
+    try:
+        cur.execute("ALTER TABLE tickets ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cur.execute("ALTER TABLE tickets ADD COLUMN archived_at TEXT;")
+    except sqlite3.OperationalError:
+        pass
+
     # seed users
     cur.execute("SELECT COUNT(*) AS n FROM users;")
     if cur.fetchone()["n"] == 0:
         cur.execute(
             "INSERT INTO users (name, username, password, role) VALUES (?, ?, ?, ?)",
-            ("Administrador", "admin", hash_password("admin123"), "admin"),
+            ("Administrador", "admin", "admin123", "admin"),
         )
         cur.execute(
             "INSERT INTO users (name, username, password, role) VALUES (?, ?, ?, ?)",
-            ("Rafael Augusto", "operador", hash_password("123"), "operador"),
+            ("Rafael Augusto", "operador", "123", "operador"),
         )
 
     # seed sectors
     cur.execute("SELECT COUNT(*) AS n FROM sectors;")
     if cur.fetchone()["n"] == 0:
         for name, icon, color in DEFAULT_SECTORS:
-            cur.execute(
-                "INSERT INTO sectors (name, icon, color) VALUES (?, ?, ?)",
-                (name, icon, color),
-            )
+            cur.execute("INSERT INTO sectors (name, icon, color) VALUES (?, ?, ?)", (name, icon, color))
 
     # seed equipments
     cur.execute("SELECT COUNT(*) AS n FROM equipments;")
@@ -540,6 +500,7 @@ def inject_css():
 
         /* Small helper: spacing for top-back row */
         .topRowTitle{ margin-top: 2px; }
+
         </style>
         """,
         unsafe_allow_html=True,
@@ -591,22 +552,10 @@ def save_upload_file(file) -> Optional[str]:
 # AUTH
 # =========================================================
 def auth_user(username: str, password: str) -> Optional[dict]:
-    r = one("SELECT * FROM users WHERE username = ? LIMIT 1", (username,))
+    r = one("SELECT * FROM users WHERE username = ? AND password = ? LIMIT 1", (username, password))
     if not r:
         return None
-
-    user = dict(r)
-    if not verify_password(password, user.get("password", "")):
-        return None
-
-    # Auto-upgrade: se a senha estiver em texto puro, converte para hash após login OK
-    stored = user.get("password", "")
-    if stored and not stored.startswith(PBKDF2_PREFIX + "$"):
-        new_hash = hash_password(password)
-        exec_sql("UPDATE users SET password = ? WHERE id = ?", (new_hash, user["id"]))
-        user["password"] = new_hash
-
-    return user
+    return dict(r)
 
 
 def current_user() -> Optional[dict]:
@@ -617,6 +566,46 @@ def require_login():
     if not current_user():
         set_route("login")
         st.rerun()
+
+
+# =========================================================
+# USERS (ADMIN)
+# =========================================================
+def get_users() -> List[dict]:
+    rs = all_rows("SELECT id, name, username, password, role, photo_path FROM users ORDER BY role DESC, name ASC")
+    return [dict(r) for r in rs]
+
+
+def get_user_by_id(user_id: int) -> Optional[dict]:
+    r = one("SELECT * FROM users WHERE id = ?", (user_id,))
+    return dict(r) if r else None
+
+
+def count_admins() -> int:
+    r = one("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'")
+    return int(r["n"]) if r else 0
+
+
+def create_user(name: str, username: str, password: str, role: str):
+    exec_sql(
+        "INSERT INTO users (name, username, password, role) VALUES (?, ?, ?, ?)",
+        (name.strip(), username.strip(), password, role),
+    )
+
+
+def update_user_profile(user_id: int, name: str, username: str, role: str):
+    exec_sql(
+        "UPDATE users SET name = ?, username = ?, role = ? WHERE id = ?",
+        (name.strip(), username.strip(), role, user_id),
+    )
+
+
+def update_user_password(user_id: int, new_password: str):
+    exec_sql("UPDATE users SET password = ? WHERE id = ?", (new_password, user_id))
+
+
+def delete_user(user_id: int):
+    exec_sql("DELETE FROM users WHERE id = ?", (user_id,))
 
 
 # =========================================================
@@ -674,8 +663,9 @@ def create_ticket(
         INSERT INTO tickets (
           created_at, created_by, created_by_name,
           sector_id, sector_name, equipment_id, equipment_name,
-          description, priority, status, attachments_json, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          description, priority, status, attachments_json, updated_at,
+          archived, archived_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
         """,
         (
             now_iso(),
@@ -698,23 +688,33 @@ def list_tickets(
     created_by: Optional[str] = None,
     status: Optional[str] = None,
     priority: Optional[str] = None,
+    include_archived: bool = False,
 ) -> List[dict]:
     sql = "SELECT * FROM tickets"
     params = []
     where = []
+
     if created_by:
         where.append("created_by = ?")
         params.append(created_by)
+
+    if not include_archived:
+        where.append("archived = 0")
+
     if status and status != "Todos Status":
         where.append("status = ?")
         params.append(status)
+
     if priority and priority != "Todas Prioridades":
         where.append("priority = ?")
         params.append(priority)
+
     if where:
         sql += " WHERE " + " AND ".join(where)
+
     sql += " ORDER BY id DESC"
     rs = all_rows(sql, tuple(params))
+
     out = []
     for r in rs:
         d = dict(r)
@@ -727,58 +727,44 @@ def update_ticket_status(ticket_id: int, status: str):
     exec_sql("UPDATE tickets SET status = ?, updated_at = ? WHERE id = ?", (status, now_iso(), ticket_id))
 
 
+def archive_ticket(ticket_id: int):
+    exec_sql(
+        "UPDATE tickets SET archived = 1, archived_at = ?, updated_at = ? WHERE id = ?",
+        (now_iso(), now_iso(), ticket_id),
+    )
+
+
+def unarchive_ticket(ticket_id: int):
+    exec_sql(
+        "UPDATE tickets SET archived = 0, archived_at = NULL, updated_at = ? WHERE id = ?",
+        (now_iso(), ticket_id),
+    )
+
+
+def delete_ticket_forever(ticket_id: int):
+    exec_sql("DELETE FROM tickets WHERE id = ?", (ticket_id,))
+
+
 def stats_admin() -> Dict[str, int]:
-    total = one("SELECT COUNT(*) AS n FROM tickets")["n"]
-    abertos = one("SELECT COUNT(*) AS n FROM tickets WHERE status = 'Aberto'")["n"]
-    andamento = one("SELECT COUNT(*) AS n FROM tickets WHERE status = 'Em andamento'")["n"]
-    urgentes = one("SELECT COUNT(*) AS n FROM tickets WHERE priority = 'Urgente' AND status != 'Encerrado'")["n"]
-    aguardando = one("SELECT COUNT(*) AS n FROM tickets WHERE status = 'Aguardando'")["n"]
-    encerrados = one("SELECT COUNT(*) AS n FROM tickets WHERE status = 'Encerrado'")["n"]
+    total = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = 0")["n"]
+    abertos = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = 0 AND status = 'Aberto'")["n"]
+    andamento = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = 0 AND status = 'Em andamento'")["n"]
+    urgentes = one(
+        "SELECT COUNT(*) AS n FROM tickets WHERE archived = 0 AND priority = 'Urgente' AND status != 'Encerrado'"
+    )["n"]
+    aguardando = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = 0 AND status = 'Aguardando'")["n"]
+    encerrados = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = 0 AND status = 'Encerrado'")["n"]
+    arquivados = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = 1")["n"]
+
     return {
-        "total": total,
-        "abertos": abertos,
-        "andamento": andamento,
-        "urgentes": urgentes,
-        "aguardando": aguardando,
-        "encerrados": encerrados,
+        "total": int(total),
+        "abertos": int(abertos),
+        "andamento": int(andamento),
+        "urgentes": int(urgentes),
+        "aguardando": int(aguardando),
+        "encerrados": int(encerrados),
+        "arquivados": int(arquivados),
     }
-
-
-# =========================================================
-# USERS (ADMIN)
-# =========================================================
-def list_users() -> List[dict]:
-    rs = all_rows("SELECT id, name, username, role, photo_path FROM users ORDER BY role DESC, name ASC")
-    return [dict(r) for r in rs]
-
-
-def get_user_by_id(user_id: int) -> Optional[dict]:
-    r = one("SELECT * FROM users WHERE id = ?", (user_id,))
-    return dict(r) if r else None
-
-
-def update_user_credentials(user_id: int, new_name: str, new_username: str, new_password: Optional[str]):
-    """
-    new_password: se None ou "", não altera senha.
-    """
-    if not new_username.strip():
-        raise ValueError("Usuário (login) não pode ficar vazio.")
-
-    exists = one("SELECT id FROM users WHERE username = ? AND id != ? LIMIT 1", (new_username.strip(), user_id))
-    if exists:
-        raise ValueError("Já existe um usuário com esse login.")
-
-    if new_password is not None and new_password.strip() != "":
-        pw = hash_password(new_password.strip())
-        exec_sql(
-            "UPDATE users SET name = ?, username = ?, password = ? WHERE id = ?",
-            (new_name.strip(), new_username.strip(), pw, user_id),
-        )
-    else:
-        exec_sql(
-            "UPDATE users SET name = ?, username = ? WHERE id = ?",
-            (new_name.strip(), new_username.strip(), user_id),
-        )
 
 
 # =========================================================
@@ -803,7 +789,10 @@ def top_back(title: str, subtitle: Optional[str] = None, back_to: Optional[str] 
 def hero_header(user_name: str):
     st.markdown('<div class="heroIcon">🔧</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="center bigTitle">{APP_TITLE}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="center subtitle">Solicite e acompanhe manutenções de equipamentos</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="center subtitle">Solicite e acompanhe manutenções de equipamentos</div>',
+        unsafe_allow_html=True,
+    )
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
     st.markdown(f"<div class='center muted'>Olá, {user_name}! 👋</div>", unsafe_allow_html=True)
 
@@ -982,6 +971,10 @@ def urgency_boxes(selected: str):
 
 
 def ticket_card(t: dict):
+    archived_badge = ""
+    if int(t.get("archived", 0)) == 1:
+        archived_badge = " &nbsp; <span class='miniPill'>📦 Arquivado</span>"
+
     st.markdown(
         f"""
         <div class="ticketCard">
@@ -994,7 +987,10 @@ def ticket_card(t: dict):
             <div class="miniPill">{t["status"]}</div>
           </div>
           <div class="ticketDesc">{t["description"]}</div>
-          <div class="ticketFooter">👤 {t["created_by_name"]} &nbsp; • &nbsp; ⏱ {fmt_dt(t["created_at"])}</div>
+          <div class="ticketFooter">
+            👤 {t["created_by_name"]} &nbsp; • &nbsp; ⏱ {fmt_dt(t["created_at"])}
+            {archived_badge}
+          </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1142,6 +1138,77 @@ def dialog_new_equipment(edit_id: Optional[int] = None):
         st.rerun()
 
 
+@st.dialog("Usuário")
+def dialog_user(edit_id: Optional[int] = None):
+    data = get_user_by_id(edit_id) if edit_id else None
+    is_new = data is None
+
+    st.markdown("<div class='title'>Dados do usuário</div>", unsafe_allow_html=True)
+    name = st.text_input("Nome", value=(data["name"] if data else ""), placeholder="Ex: João")
+    username = st.text_input("Login", value=(data["username"] if data else ""), placeholder="Ex: joao")
+    role = st.selectbox("Tipo", ["operador", "admin"], index=(1 if (data and data["role"] == "admin") else 0))
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    st.markdown("<div class='title'>Senha</div>", unsafe_allow_html=True)
+    if is_new:
+        pwd = st.text_input("Senha", type="password", placeholder="Defina uma senha")
+        pwd2 = st.text_input("Confirmar senha", type="password", placeholder="Repita a senha")
+    else:
+        pwd = st.text_input("Nova senha (opcional)", type="password", placeholder="Deixe em branco para não alterar")
+        pwd2 = st.text_input("Confirmar nova senha", type="password", placeholder="Repita a nova senha")
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+    if st.button("Salvar", type="primary", use_container_width=True):
+        if not name.strip():
+            st.error("Informe o nome.")
+            st.stop()
+        if not username.strip():
+            st.error("Informe o login.")
+            st.stop()
+
+        # valida senha
+        if is_new:
+            if not pwd:
+                st.error("Informe a senha.")
+                st.stop()
+            if pwd != pwd2:
+                st.error("As senhas não conferem.")
+                st.stop()
+        else:
+            if pwd or pwd2:
+                if pwd != pwd2:
+                    st.error("As senhas não conferem.")
+                    st.stop()
+
+        try:
+            if is_new:
+                create_user(name=name, username=username, password=pwd, role=role)
+            else:
+                # trava: não permitir remover o último admin
+                if data["role"] == "admin" and role != "admin" and count_admins() <= 1:
+                    st.error("Você não pode remover o último administrador do sistema.")
+                    st.stop()
+
+                update_user_profile(user_id=edit_id, name=name, username=username, role=role)
+                if pwd:
+                    update_user_password(user_id=edit_id, new_password=pwd)
+
+                    # se o admin alterou a própria senha, atualiza sessão para evitar logoff
+                    cu = current_user()
+                    if cu and int(cu.get("id", 0)) == int(edit_id):
+                        cu["password"] = pwd
+                        cu["username"] = username
+                        cu["name"] = name
+                        cu["role"] = role
+                        st.session_state.user = cu
+
+            st.success("Usuário salvo.")
+            st.rerun()
+        except sqlite3.IntegrityError:
+            st.error("Já existe um usuário com esse login (username).")
+
+
 # =========================================================
 # SCREENS
 # =========================================================
@@ -1195,7 +1262,8 @@ def screen_home():
 
     c1, c2, c3 = st.columns(3)
     for i, (c, txt) in enumerate(
-        [(c1, "Escolha o setor"), (c2, "Selecione o equipamento"), (c3, "Descreva o problema")], start=1
+        [(c1, "Escolha o setor"), (c2, "Selecione o equipamento"), (c3, "Descreva o problema")],
+        start=1,
     ):
         with c:
             st.markdown(
@@ -1245,7 +1313,10 @@ def screen_abrir_chamado():
         sid = st.session_state.get("sel_sector_id")
         sector = get_sector(sid) if sid else None
 
-        st.markdown("<div class='center title' style='font-size:1.1rem;'>Qual equipamento precisa de manutenção?</div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div class='center title' style='font-size:1.1rem;'>Qual equipamento precisa de manutenção?</div>",
+            unsafe_allow_html=True,
+        )
         if sector:
             st.markdown(f"<div class='center muted'>Setor: <b>{sector['name']}</b></div>", unsafe_allow_html=True)
 
@@ -1305,9 +1376,9 @@ def screen_abrir_chamado():
         saved_paths = []
         if ups:
             for f in ups[:5]:
-                pth = save_upload_file(f)
-                if pth:
-                    saved_paths.append(pth)
+                p = save_upload_file(f)
+                if p:
+                    saved_paths.append(p)
 
         st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
         st.markdown("<div style='font-weight:900;'>Qual a urgência?</div>", unsafe_allow_html=True)
@@ -1385,7 +1456,7 @@ def screen_meus_chamados():
     app_shell_start()
     top_back("Meus Chamados", "Acompanhe o status das suas solicitações", back_to="home")
 
-    tickets = list_tickets(created_by=user["username"])
+    tickets = list_tickets(created_by=user["username"], include_archived=False)
     if not tickets:
         st.info("Você ainda não abriu nenhum chamado.")
     else:
@@ -1418,13 +1489,10 @@ def screen_admin_painel():
         set_route("admin_cadastros")
         st.rerun()
 
-    if st.button("👤  Usuários / Senhas", key="btn_users", use_container_width=False):
-        set_route("admin_users")
-        st.rerun()
-
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
+    # Tabs (visual)
     tab1, tab2 = st.columns(2)
     with tab1:
         st.markdown("<div class='miniPill'>🔧  Chamados</div>", unsafe_allow_html=True)
@@ -1436,7 +1504,7 @@ def screen_admin_painel():
     stats = stats_admin()
     k1, k2 = st.columns(2)
     with k1:
-        kpi_card("🔧", stats["total"], "Total", "rgba(59,130,246,.16)")
+        kpi_card("🔧", stats["total"], "Total (ativos)", "rgba(59,130,246,.16)")
     with k2:
         kpi_card("🕒", stats["abertos"], "Abertos", "rgba(245,158,11,.16)")
 
@@ -1445,6 +1513,12 @@ def screen_admin_painel():
         kpi_card("🌀", stats["andamento"], "Em Andamento", "rgba(96,165,250,.14)")
     with k4:
         kpi_card("⚠️", stats["urgentes"], "Urgentes", "rgba(239,68,68,.16)")
+
+    k5, k6 = st.columns(2)
+    with k5:
+        kpi_card("📦", stats["arquivados"], "Arquivados", "rgba(148,163,184,.14)")
+    with k6:
+        kpi_card("✅", stats["encerrados"], "Encerrados (ativos)", "rgba(34,197,94,.14)")
 
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
@@ -1457,9 +1531,10 @@ def screen_admin_painel():
     )
     status = st.selectbox("Todos Status", ["Todos Status"] + STATUS_OPTIONS, key="adm_status")
     prio = st.selectbox("Todas Prioridades", ["Todas Prioridades"] + PRIORITY_OPTIONS, key="adm_prio")
+    show_archived = st.checkbox("Mostrar arquivados", value=False, key="adm_show_archived")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    tickets = list_tickets(created_by=None, status=status, priority=prio)
+    tickets = list_tickets(created_by=None, status=status, priority=prio, include_archived=show_archived)
     if q.strip():
         qq = q.strip().lower()
         tickets = [
@@ -1480,16 +1555,43 @@ def screen_admin_painel():
     else:
         for t in tickets[:50]:
             ticket_card(t)
-            with st.expander("Atualizar status", expanded=False):
+
+            with st.expander("Ações do chamado", expanded=False):
                 new_status = st.selectbox(
                     "Status dos Chamados",
                     STATUS_OPTIONS,
                     index=STATUS_OPTIONS.index(t["status"]),
                     key=f"st_{t['id']}",
                 )
-                if st.button("Salvar status", key=f"save_st_{t['id']}", type="primary"):
-                    update_ticket_status(t["id"], new_status)
-                    st.success("Status atualizado.")
+
+                colA, colB = st.columns(2)
+                with colA:
+                    if st.button("Salvar status", key=f"save_st_{t['id']}", type="primary", use_container_width=True):
+                        update_ticket_status(t["id"], new_status)
+                        st.success("Status atualizado.")
+                        st.rerun()
+
+                with colB:
+                    if int(t.get("archived", 0)) == 1:
+                        if st.button("Desarquivar", key=f"unarc_{t['id']}", use_container_width=True):
+                            unarchive_ticket(t["id"])
+                            st.success("Chamado desarquivado.")
+                            st.rerun()
+                    else:
+                        if st.button("Arquivar", key=f"arc_{t['id']}", use_container_width=True):
+                            archive_ticket(t["id"])
+                            st.success("Chamado arquivado.")
+                            st.rerun()
+
+                st.markdown("---")
+                st.warning("Excluir definitivamente remove do banco e não entra em estatísticas.")
+                confirm = st.checkbox("Confirmo que quero excluir definitivamente", key=f"conf_del_{t['id']}")
+                if st.button("🗑️ Excluir definitivamente", key=f"del_{t['id']}", use_container_width=True):
+                    if not confirm:
+                        st.error("Marque a confirmação antes de excluir definitivamente.")
+                        st.stop()
+                    delete_ticket_forever(t["id"])
+                    st.success("Chamado excluído definitivamente.")
                     st.rerun()
 
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
@@ -1509,12 +1611,12 @@ def screen_admin_cadastros():
         return
 
     app_shell_start()
-    top_back("Gerenciar Cadastros", "Setores e equipamentos", back_to="admin_painel")
+    top_back("Gerenciar Cadastros", "Setores, equipamentos e usuários", back_to="admin_painel")
 
     if "cad_tab" not in st.session_state:
         st.session_state.cad_tab = "Setores"
 
-    t1, t2 = st.columns(2)
+    t1, t2, t3 = st.columns(3)
     with t1:
         if st.button("📋  Setores", use_container_width=True, key="tab_setores"):
             st.session_state.cad_tab = "Setores"
@@ -1522,6 +1624,10 @@ def screen_admin_cadastros():
     with t2:
         if st.button("🔧  Equipamentos", use_container_width=True, key="tab_equip"):
             st.session_state.cad_tab = "Equipamentos"
+            st.rerun()
+    with t3:
+        if st.button("👤  Usuários", use_container_width=True, key="tab_users"):
+            st.session_state.cad_tab = "Usuários"
             st.rerun()
 
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
@@ -1567,7 +1673,7 @@ def screen_admin_cadastros():
                         exec_sql("DELETE FROM sectors WHERE id=?", (s["id"],))
                         st.rerun()
 
-    else:
+    elif st.session_state.cad_tab == "Equipamentos":
         if st.button("➕  Novo Equipamento", type="primary", use_container_width=True, key="novo_eq"):
             dialog_new_equipment(edit_id=None)
 
@@ -1613,85 +1719,53 @@ def screen_admin_cadastros():
                         exec_sql("DELETE FROM equipments WHERE id=?", (e["id"],))
                         st.rerun()
 
-    app_shell_end()
+    else:
+        # USUÁRIOS
+        st.markdown("<div class='muted'>O administrador pode alterar login e senha (inclusive dele mesmo).</div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
+        if st.button("➕  Novo Usuário", type="primary", use_container_width=True, key="novo_user"):
+            dialog_user(edit_id=None)
 
-def screen_admin_users():
-    inject_css()
-    require_login()
-    user = current_user()
-    if user["role"] != "admin":
-        st.error("Acesso restrito ao Admin.")
-        return
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+        users = get_users()
+        if not users:
+            st.info("Nenhum usuário cadastrado.")
+        else:
+            for u in users:
+                badge = "🛡️" if u["role"] == "admin" else "👤"
+                left, mid, right = st.columns([8, 1, 1])
+                with left:
+                    st.markdown(
+                        f"""
+                        <div class="cadRow">
+                          <div class="cadLeft">
+                            <div class="cadBadge" style="background:rgba(59,130,246,.12);">{badge}</div>
+                            <div>
+                              <div class="cadName">{u["name"]}</div>
+                              <div class="cadSub">{u["username"]} • {u["role"]}</div>
+                            </div>
+                          </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
 
-    app_shell_start()
-    top_back("Usuários e Senhas", "Altere login e senha do operador e do admin", back_to="admin_painel")
+                with mid:
+                    if st.button("✏️", key=f"edit_user_{u['id']}", help="Editar"):
+                        dialog_user(edit_id=u["id"])
 
-    users = list_users()
-    if not users:
-        st.info("Nenhum usuário encontrado.")
-        app_shell_end()
-        return
-
-    labels = [f'{u["name"]} ({u["role"]}) — login: {u["username"]}' for u in users]
-    idx = st.selectbox("Selecione o usuário", list(range(len(users))), format_func=lambda i: labels[i])
-
-    selected = users[idx]
-    full = get_user_by_id(selected["id"])
-
-    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown("<div class='title'>Editar</div>", unsafe_allow_html=True)
-    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-
-    new_name = st.text_input("Nome", value=full.get("name", ""))
-    new_username = st.text_input("Login (username)", value=full.get("username", ""))
-
-    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-    st.markdown("<div class='muted'>Senha</div>", unsafe_allow_html=True)
-    new_password = st.text_input("Nova senha (deixe em branco para não mudar)", value="", type="password")
-    new_password2 = st.text_input("Confirmar nova senha", value="", type="password")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Salvar alterações", type="primary", use_container_width=True):
-            try:
-                if new_password.strip() or new_password2.strip():
-                    if new_password.strip() != new_password2.strip():
-                        st.error("As senhas não conferem.")
-                        st.stop()
-                    if len(new_password.strip()) < 4:
-                        st.error("A senha deve ter pelo menos 4 caracteres.")
-                        st.stop()
-
-                update_user_credentials(
-                    user_id=full["id"],
-                    new_name=new_name,
-                    new_username=new_username,
-                    new_password=new_password if new_password.strip() else None,
-                )
-
-                # Se o admin alterou a si próprio, atualiza a sessão
-                if int(full["id"]) == int(user["id"]):
-                    refreshed = get_user_by_id(full["id"])
-                    if refreshed:
-                        st.session_state.user = refreshed
-
-                st.success("Usuário atualizado com sucesso.")
-                st.rerun()
-            except ValueError as e:
-                st.error(str(e))
-            except sqlite3.IntegrityError:
-                st.error("Não foi possível salvar. Verifique se o login já existe.")
-            except Exception:
-                st.error("Erro inesperado ao salvar.")
-
-    with col2:
-        if st.button("Voltar", use_container_width=True):
-            set_route("admin_painel")
-            st.rerun()
+                with right:
+                    if st.button("🗑️", key=f"del_user_{u['id']}", help="Excluir"):
+                        if u["role"] == "admin" and count_admins() <= 1:
+                            st.error("Você não pode excluir o último administrador.")
+                            st.stop()
+                        if int(current_user().get("id", 0)) == int(u["id"]):
+                            st.error("Você não pode excluir o seu próprio usuário logado.")
+                            st.stop()
+                        delete_user(u["id"])
+                        st.success("Usuário excluído.")
+                        st.rerun()
 
     app_shell_end()
 
@@ -1715,8 +1789,6 @@ def router():
         screen_admin_painel()
     elif route == "admin_cadastros":
         screen_admin_cadastros()
-    elif route == "admin_users":
-        screen_admin_users()
     else:
         st.session_state.route = "home"
         st.rerun()
