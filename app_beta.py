@@ -2,7 +2,7 @@
 import os
 import json
 import uuid
-import sqlite3
+# import sqlite3
 from datetime import datetime
 from typing import Optional, List, Dict
 from PIL import Image
@@ -21,7 +21,7 @@ import pandas as pd  # (mantido se você quiser relatórios depois)
 # CONFIG
 # =========================================================
 APP_TITLE = "Sistema de Manutenção"
-DB_PATH = "manutencao.sqlite3"
+# DB_PATH = "manutencao.sqlite3"
 UPLOAD_DIR = "uploads"
 
 MAX_FILE_MB = 10
@@ -86,69 +86,76 @@ DEFAULT_EQUIPMENTS = [
 def conn():
     return psycopg2.connect(st.secrets["SUPABASE_DB_URL"], cursor_factory=RealDictCursor)
 
-
 def init_db():
+    # Tabelas já criadas no Supabase (Postgres).
+    # Mantemos apenas o diretório de uploads local (opcional).
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    c = conn()
-    cur = c.cursor()
+    return
 
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            username TEXT NOT NULL UNIQUE,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL,           -- operador | admin
-            photo_path TEXT
-        );
-        """
-    )
 
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sectors (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            icon TEXT,
-            color TEXT
-        );
-        """
-    )
+    
+# def init_db():
+#     os.makedirs(UPLOAD_DIR, exist_ok=True)
+#     c = conn()
+#     cur = c.cursor()
 
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS equipments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sector_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            description TEXT,
-            icon TEXT,
-            active INTEGER NOT NULL DEFAULT 1,
-            FOREIGN KEY(sector_id) REFERENCES sectors(id)
-        );
-        """
-    )
+#     cur.execute(
+#         """
+#         CREATE TABLE IF NOT EXISTS users (
+#             id INTEGER PRIMARY KEY AUTOINCREMENT,
+#             name TEXT NOT NULL,
+#             username TEXT NOT NULL UNIQUE,
+#             password TEXT NOT NULL,
+#             role TEXT NOT NULL,           -- operador | admin
+#             photo_path TEXT
+#         );
+#         """
+#     )
 
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS tickets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT NOT NULL,
-            created_by TEXT NOT NULL,
-            created_by_name TEXT NOT NULL,
-            sector_id INTEGER NOT NULL,
-            sector_name TEXT NOT NULL,
-            equipment_id INTEGER NOT NULL,
-            equipment_name TEXT NOT NULL,
-            description TEXT NOT NULL,
-            priority TEXT NOT NULL,
-            status TEXT NOT NULL,
-            attachments_json TEXT,
-            updated_at TEXT NOT NULL
-        );
-        """
-    )
+#     cur.execute(
+#         """
+#         CREATE TABLE IF NOT EXISTS sectors (
+#             id INTEGER PRIMARY KEY AUTOINCREMENT,
+#             name TEXT NOT NULL UNIQUE,
+#             icon TEXT,
+#             color TEXT
+#         );
+#         """
+#     )
+
+#     cur.execute(
+#         """
+#         CREATE TABLE IF NOT EXISTS equipments (
+#             id INTEGER PRIMARY KEY AUTOINCREMENT,
+#             sector_id INTEGER NOT NULL,
+#             name TEXT NOT NULL,
+#             description TEXT,
+#             icon TEXT,
+#             active INTEGER NOT NULL DEFAULT 1,
+#             FOREIGN KEY(sector_id) REFERENCES sectors(id)
+#         );
+#         """
+#     )
+
+#     cur.execute(
+#         """
+#         CREATE TABLE IF NOT EXISTS tickets (
+#             id INTEGER PRIMARY KEY AUTOINCREMENT,
+#             created_at TEXT NOT NULL,
+#             created_by TEXT NOT NULL,
+#             created_by_name TEXT NOT NULL,
+#             sector_id INTEGER NOT NULL,
+#             sector_name TEXT NOT NULL,
+#             equipment_id INTEGER NOT NULL,
+#             equipment_name TEXT NOT NULL,
+#             description TEXT NOT NULL,
+#             priority TEXT NOT NULL,
+#             status TEXT NOT NULL,
+#             attachments_json TEXT,
+#             updated_at TEXT NOT NULL
+#         );
+#         """
+#     )
 
     # ==============================
     # MIGRATIONS (tickets: archived)
