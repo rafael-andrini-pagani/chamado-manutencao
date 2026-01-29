@@ -1055,7 +1055,7 @@ def kpi_card(icon: str, value: int, label: str, tint: str):
 def dialog_new_sector(edit_id: Optional[int] = None):
     data = None
     if edit_id:
-        r = one("SELECT * FROM sectors WHERE id = ?", (edit_id,))
+        r = one("SELECT * FROM sectors WHERE id = %s", (edit_id,))
         data = dict(r) if r else None
 
     name = st.text_input("Nome do Setor", value=(data["name"] if data else ""), placeholder="Ex: Cozinha Principal")
@@ -1103,12 +1103,12 @@ def dialog_new_sector(edit_id: Optional[int] = None):
         try:
             if edit_id:
                 exec_sql(
-                    "UPDATE sectors SET name = ?, icon = ?, color = ? WHERE id = ?",
+                    "UPDATE sectors SET name = %s, icon = %s, color = %s WHERE id = %s",
                     (name.strip(), icon, picked, edit_id),
                 )
             else:
                 exec_sql(
-                    "INSERT INTO sectors (name, icon, color) VALUES (?, ?, ?)",
+                    "INSERT INTO sectors (name, icon, color) VALUES (%s, %s, %s)",
                     (name.strip(), icon, picked),
                 )
             st.session_state._sector_color_pick = "rgba(59,130,246,.18)"
@@ -1121,7 +1121,7 @@ def dialog_new_sector(edit_id: Optional[int] = None):
 def dialog_new_equipment(edit_id: Optional[int] = None):
     data = None
     if edit_id:
-        r = one("SELECT * FROM equipments WHERE id = ?", (edit_id,))
+        r = one("SELECT * FROM equipments WHERE id = %s", (edit_id,))
         data = dict(r) if r else None
 
     sectors = get_sectors()
@@ -1134,7 +1134,7 @@ def dialog_new_equipment(edit_id: Optional[int] = None):
 
     if data:
         sid = data["sector_id"]
-        s = one("SELECT name FROM sectors WHERE id = ?", (sid,))
+        s = one("SELECT name FROM sectors WHERE id = %s", (sid,))
         default_sector = s["name"] if s else sector_names[0]
     else:
         default_sector = sector_names[0]
@@ -1154,8 +1154,8 @@ def dialog_new_equipment(edit_id: Optional[int] = None):
             exec_sql(
                 """
                 UPDATE equipments
-                SET sector_id=?, name=?, description=?, icon=?, active=?
-                WHERE id=?
+                SET sector_id=%s, name=%s, description=%s, icon=%s, active=%s
+                WHERE id=%s
                 """,
                 (sid, eq_name.strip(), desc.strip(), icon, 1 if active else 0, edit_id),
             )
@@ -1163,7 +1163,7 @@ def dialog_new_equipment(edit_id: Optional[int] = None):
             exec_sql(
                 """
                 INSERT INTO equipments (sector_id, name, description, icon, active)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
                 (sid, eq_name.strip(), desc.strip(), icon, 1 if active else 0),
             )
@@ -1698,11 +1698,11 @@ def screen_admin_cadastros():
                     dialog_new_sector(edit_id=s["id"])
             with right:
                 if st.button("🗑️", key=f"del_sector_{s['id']}", help="Excluir"):
-                    r = one("SELECT COUNT(*) AS n FROM equipments WHERE sector_id=?", (s["id"],))
+                    r = one("SELECT COUNT(*) AS n FROM equipments WHERE sector_id=%s", (s["id"],))
                     if r and r["n"] > 0:
                         st.error("Remova/realogue os equipamentos desse setor antes de excluir.")
                     else:
-                        exec_sql("DELETE FROM sectors WHERE id=?", (s["id"],))
+                        exec_sql("DELETE FROM sectors WHERE id=%s", (s["id"],))
                         st.rerun()
 
     elif st.session_state.cad_tab == "Equipamentos":
@@ -1748,7 +1748,7 @@ def screen_admin_cadastros():
                     if r and r["n"] > 0:
                         st.error("Esse equipamento já tem chamados. Em vez de excluir, desative (🕘).")
                     else:
-                        exec_sql("DELETE FROM equipments WHERE id=?", (e["id"],))
+                        exec_sql("DELETE FROM equipments WHERE id=%s", (e["id"],))
                         st.rerun()
 
     else:
