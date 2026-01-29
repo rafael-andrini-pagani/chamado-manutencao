@@ -1113,7 +1113,7 @@ def dialog_new_sector(edit_id: Optional[int] = None):
                 )
             st.session_state._sector_color_pick = "rgba(59,130,246,.18)"
             st.rerun()
-        except sqlite3.IntegrityError:
+        except psycopg2.IntegrityError:
             st.error("Já existe um setor com esse nome.")
 
 
@@ -1237,7 +1237,7 @@ def dialog_user(edit_id: Optional[int] = None):
 
             st.success("Usuário salvo.")
             st.rerun()
-        except sqlite3.IntegrityError:
+        except psycopg2.IntegrityError:
             st.error("Já existe um usuário com esse login (username).")
 
 
