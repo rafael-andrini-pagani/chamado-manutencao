@@ -79,10 +79,12 @@ DEFAULT_EQUIPMENTS = [
 # =========================================================
 # DB LAYER (single file)
 # =========================================================
+# def conn():
+#     c = sqlite3.connect(DB_PATH, check_same_thread=False)
+#     c.row_factory = sqlite3.Row
+#     return c
 def conn():
-    c = sqlite3.connect(DB_PATH, check_same_thread=False)
-    c.row_factory = sqlite3.Row
-    return c
+    return psycopg2.connect(st.secrets["SUPABASE_DB_URL"], cursor_factory=RealDictCursor)
 
 
 def init_db():
@@ -197,8 +199,7 @@ def init_db():
     c.commit()
     c.close()
 
-
-def one(sql: str, params=()) -> Optional[sqlite3.Row]:
+def one(sql: str, params=()):
     c = conn()
     cur = c.cursor()
     cur.execute(sql, params)
@@ -206,8 +207,7 @@ def one(sql: str, params=()) -> Optional[sqlite3.Row]:
     c.close()
     return r
 
-
-def all_rows(sql: str, params=()) -> List[sqlite3.Row]:
+def all_rows(sql: str, params=()):
     c = conn()
     cur = c.cursor()
     cur.execute(sql, params)
@@ -215,16 +215,13 @@ def all_rows(sql: str, params=()) -> List[sqlite3.Row]:
     c.close()
     return rs
 
-
-def exec_sql(sql: str, params=()) -> int:
+def exec_sql(sql: str, params=()):
     c = conn()
     cur = c.cursor()
     cur.execute(sql, params)
     c.commit()
-    lid = cur.lastrowid
     c.close()
-    return lid
-
+    return None
 
 # =========================================================
 # UI / STYLE (DARK / MOBILE FIRST)
