@@ -7,6 +7,8 @@ from datetime import datetime
 from typing import Optional, List, Dict
 from PIL import Image
 import streamlit as st
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import pandas as pd  # (mantido se você quiser relatórios depois)
 
 # st.set_page_config(
