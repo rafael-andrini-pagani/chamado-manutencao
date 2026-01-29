@@ -557,7 +557,8 @@ def save_upload_file(file) -> Optional[str]:
 # AUTH
 # =========================================================
 def auth_user(username: str, password: str) -> Optional[dict]:
-    r = one("SELECT * FROM users WHERE username = ? AND password = ? LIMIT 1", (username, password))
+    r = one("SELECT * FROM users WHERE username = %s AND password = %s LIMIT 1", (username, password))
+
     if not r:
         return None
     return dict(r)
@@ -582,7 +583,8 @@ def get_users() -> List[dict]:
 
 
 def get_user_by_id(user_id: int) -> Optional[dict]:
-    r = one("SELECT * FROM users WHERE id = ?", (user_id,))
+    r = one("SELECT * FROM users WHERE id = %s", (user_id,))
+
     return dict(r) if r else None
 
 
@@ -593,24 +595,24 @@ def count_admins() -> int:
 
 def create_user(name: str, username: str, password: str, role: str):
     exec_sql(
-        "INSERT INTO users (name, username, password, role) VALUES (?, ?, ?, ?)",
+        "INSERT INTO users (name, username, password, role) VALUES (%s, %s, %s, %s)",
         (name.strip(), username.strip(), password, role),
     )
 
 
 def update_user_profile(user_id: int, name: str, username: str, role: str):
     exec_sql(
-        "UPDATE users SET name = ?, username = ?, role = ? WHERE id = ?",
+        "UPDATE users SET name = %s, username = %s, role = %s WHERE id = %s",
         (name.strip(), username.strip(), role, user_id),
     )
 
 
 def update_user_password(user_id: int, new_password: str):
-    exec_sql("UPDATE users SET password = ? WHERE id = ?", (new_password, user_id))
+    exec_sql("UPDATE users SET password = %s WHERE id = %s", (new_password, user_id))
 
 
 def delete_user(user_id: int):
-    exec_sql("DELETE FROM users WHERE id = ?", (user_id,))
+    exec_sql("DELETE FROM users WHERE id = %s", (user_id,))
 
 
 # =========================================================
@@ -622,21 +624,29 @@ def get_sectors() -> List[dict]:
 
 
 def get_sector(sector_id: int) -> Optional[dict]:
-    r = one("SELECT * FROM sectors WHERE id = ?", (sector_id,))
+    r = one("SELECT * FROM sectors WHERE id = %s", (sector_id,))
     return dict(r) if r else None
 
 
-def get_equipments(sector_id: Optional[int] = None, active_only=True) -> List[dict]:
-    sql = "SELECT e.*, s.name as sector_name FROM equipments e JOIN sectors s ON s.id = e.sector_id"
-    params = []
-    where = []
+def get_equipments(sector_id: Optional[int] = None, active_only: bool = True) -> List[dict]:
+    sql = """
+        SELECT e.*, s.name AS sector_name
+        FROM equipments e
+        JOIN sectors s ON s.id = e.sector_id
+    """
+    params: List[object] = []
+    where: List[str] = []
+
     if sector_id is not None:
-        where.append("e.sector_id = ?")
+        where.append("e.sector_id = %s")
         params.append(sector_id)
+
     if active_only:
-        where.append("e.active = 1")
+        where.append("e.active = TRUE")
+
     if where:
         sql += " WHERE " + " AND ".join(where)
+
     sql += " ORDER BY e.name ASC"
     rs = all_rows(sql, tuple(params))
     return [dict(r) for r in rs]
@@ -647,7 +657,7 @@ def get_equipment(equipment_id: int) -> Optional[dict]:
         """
         SELECT e.*, s.name as sector_name
         FROM equipments e JOIN sectors s ON s.id = e.sector_id
-        WHERE e.id = ?
+        WHERE e.id = %s
         """,
         (equipment_id,),
     )
@@ -670,7 +680,7 @@ def create_ticket(
           sector_id, sector_name, equipment_id, equipment_name,
           description, priority, status, attachments_json, updated_at,
           archived, archived_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, NULL)
         """,
         (
             now_iso(),
@@ -696,22 +706,22 @@ def list_tickets(
     include_archived: bool = False,
 ) -> List[dict]:
     sql = "SELECT * FROM tickets"
-    params = []
-    where = []
+    params: List[object] = []
+    where: List[str] = []
 
     if created_by:
-        where.append("created_by = ?")
+        where.append("created_by = %s")
         params.append(created_by)
 
     if not include_archived:
-        where.append("archived = 0")
+        where.append("archived = FALSE")
 
     if status and status != "Todos Status":
-        where.append("status = ?")
+        where.append("status = %s")
         params.append(status)
 
     if priority and priority != "Todas Prioridades":
-        where.append("priority = ?")
+        where.append("priority = %s")
         params.append(priority)
 
     if where:
@@ -720,7 +730,7 @@ def list_tickets(
     sql += " ORDER BY id DESC"
     rs = all_rows(sql, tuple(params))
 
-    out = []
+    out: List[dict] = []
     for r in rs:
         d = dict(r)
         d["attachments"] = json.loads(d["attachments_json"]) if d.get("attachments_json") else []
@@ -729,37 +739,46 @@ def list_tickets(
 
 
 def update_ticket_status(ticket_id: int, status: str):
-    exec_sql("UPDATE tickets SET status = ?, updated_at = ? WHERE id = ?", (status, now_iso(), ticket_id))
+    exec_sql(
+        "UPDATE tickets SET status = %s, updated_at = %s WHERE id = %s",
+        (status, now_iso(), ticket_id),
+    )
 
 
 def archive_ticket(ticket_id: int):
     exec_sql(
-        "UPDATE tickets SET archived = 1, archived_at = ?, updated_at = ? WHERE id = ?",
+        "UPDATE tickets SET archived = TRUE, archived_at = %s, updated_at = %s WHERE id = %s",
         (now_iso(), now_iso(), ticket_id),
     )
 
 
 def unarchive_ticket(ticket_id: int):
     exec_sql(
-        "UPDATE tickets SET archived = 0, archived_at = NULL, updated_at = ? WHERE id = ?",
+        "UPDATE tickets SET archived = FALSE, archived_at = NULL, updated_at = %s WHERE id = %s",
         (now_iso(), ticket_id),
     )
 
 
 def delete_ticket_forever(ticket_id: int):
-    exec_sql("DELETE FROM tickets WHERE id = ?", (ticket_id,))
+    exec_sql("DELETE FROM tickets WHERE id = %s", (ticket_id,))
 
 
 def stats_admin() -> Dict[str, int]:
-    total = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = 0")["n"]
-    abertos = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = 0 AND status = 'Aberto'")["n"]
-    andamento = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = 0 AND status = 'Em andamento'")["n"]
+    total = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = FALSE")["n"]
+    abertos = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = FALSE AND status = 'Aberto'")["n"]
+    andamento = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = FALSE AND status = 'Em andamento'")["n"]
     urgentes = one(
-        "SELECT COUNT(*) AS n FROM tickets WHERE archived = 0 AND priority = 'Urgente' AND status != 'Encerrado'"
+        """
+        SELECT COUNT(*) AS n
+        FROM tickets
+        WHERE archived = FALSE
+          AND priority = 'Urgente'
+          AND status <> 'Encerrado'
+        """
     )["n"]
-    aguardando = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = 0 AND status = 'Aguardando'")["n"]
-    encerrados = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = 0 AND status = 'Encerrado'")["n"]
-    arquivados = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = 1")["n"]
+    aguardando = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = FALSE AND status = 'Aguardando'")["n"]
+    encerrados = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = FALSE AND status = 'Encerrado'")["n"]
+    arquivados = one("SELECT COUNT(*) AS n FROM tickets WHERE archived = TRUE")["n"]
 
     return {
         "total": int(total),
@@ -770,6 +789,7 @@ def stats_admin() -> Dict[str, int]:
         "encerrados": int(encerrados),
         "arquivados": int(arquivados),
     }
+
 
 
 # =========================================================
