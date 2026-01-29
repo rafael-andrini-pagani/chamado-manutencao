@@ -1004,7 +1004,7 @@ def urgency_boxes(selected: str):
 
 def ticket_card(t: dict):
     archived_badge = ""
-    if int(t.get("archived", 0)) == 1:
+    if bool(t.get("archived")):
         archived_badge = " &nbsp; <span class='miniPill'>📦 Arquivado</span>"
 
     st.markdown(
@@ -1604,7 +1604,7 @@ def screen_admin_painel():
                         st.rerun()
 
                 with colB:
-                    if int(t.get("archived", 0)) == 1:
+                    if bool(t.get("archived")):
                         if st.button("Desarquivar", key=f"unarc_{t['id']}", use_container_width=True):
                             unarchive_ticket(t["id"])
                             st.success("Chamado desarquivado.")
